@@ -7,14 +7,14 @@ from rest_framework.response import Response
 
 from api.crud.crud_attendance import (
     toggle_has_QR,
-    get_detailed_hours, get_detailed_hours_and_self,
+    get_detailed_hours,
+    get_detailed_hours_and_self,
 )
-from api.permissions import (
-    IsStudent, IsStaff,
-)
+from api.permissions import IsStudent, IsStaff
 from api.serializers import (
     get_error_serializer,
-    TrainingHourSerializer, EmptySerializer,
+    TrainingHourSerializer,
+    EmptySerializer,
     HasQRSerializer,
 )
 from api.serializers.profile import GenderSerializer
@@ -31,9 +31,6 @@ from sport.models import Semester, Student, Group
 @api_view(["GET"])
 @permission_classes([IsStudent])
 def get_student_info(request, **kwargs):
-    """
-    Get info about current student.
-    """
     student: Student = request.user.student
     serializer = StudentSerializer(student)
     return Response(serializer.data)
@@ -49,9 +46,6 @@ def get_student_info(request, **kwargs):
 @api_view(["POST"])
 @permission_classes([IsStudent])
 def toggle_QR_presence(request, **kwargs):
-    """
-    Toggles has_QR status
-    """
     student = request.user.student
     toggle_has_QR(student)
     serializer = HasQRSerializer(student)
@@ -70,8 +64,6 @@ def toggle_QR_presence(request, **kwargs):
 def change_gender(request, **kwargs):
     serializer = GenderSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-
-    print(serializer.validated_data['student_id'])
 
     student = Student.objects.get(user_id=serializer.validated_data['student_id'])
     student.gender = serializer.validated_data['gender']
@@ -96,13 +88,9 @@ training_history404 = get_error_serializer(
 )
 @api_view(["GET"])
 @permission_classes([IsStudent])
-# TODO: Replace on get_history_with_self
 def get_history(request, semester_id: int, **kwargs):
-    """
-    Get student's trainings per_semester
-    """
     semester = get_object_or_404(Semester, pk=semester_id)
-    student = request.user  # user.pk == user.student.pk
+    student = request.user
     return Response({
         "trainings": list(map(
             lambda g: {
@@ -112,6 +100,7 @@ def get_history(request, semester_id: int, **kwargs):
             get_detailed_hours(student, semester)
         ))
     })
+
 
 @extend_schema(
     methods=["GET"],
@@ -123,11 +112,8 @@ def get_history(request, semester_id: int, **kwargs):
 @api_view(["GET"])
 @permission_classes([IsStudent])
 def get_history_with_self(request, semester_id: int, **kwargs):
-    """
-    Get student's trainings per_semester
-    """
     semester = get_object_or_404(Semester, pk=semester_id)
-    student = request.user  # user.pk == user.student.pk
+    student = request.user
     return Response({
         "trainings": list(map(
             lambda g: {

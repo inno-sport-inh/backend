@@ -5,14 +5,13 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
 from api.crud import get_ongoing_semester
-
 from api.permissions import IsStudent, IsTrainer
 
 from api.serializers import (
     MeasurementPostSerializer,
     MeasurementResultsSerializer,
     NotFoundSerializer,
-    ErrorSerializer
+    ErrorSerializer,
 )
 
 from sport.models import Measurement, MeasurementSession, MeasurementResult, Student
@@ -20,8 +19,6 @@ from sport.models import Measurement, MeasurementSession, MeasurementResult, Stu
 
 @extend_schema(
     methods=["GET"],
-    # TODO: Check
-    # parameters=[MeasurementSerializer(many=True)],
     responses={
         status.HTTP_200_OK: MeasurementResultsSerializer,
     }
@@ -31,14 +28,15 @@ def get_measurements(request, **kwargs):
     measurements = Measurement.objects.all()
     result = []
     for measurement in measurements:
-        result.append({"name": measurement.name, "value_unit": measurement.value_unit})
+        result.append({
+            "name": measurement.name,
+            "value_unit": measurement.value_unit
+        })
     return Response(result)
 
 
 @extend_schema(
     methods=["GET"],
-    # TODO: Check
-    # parameters=[MeasurementResultsSerializer],
     responses={
         status.HTTP_200_OK: MeasurementResultsSerializer,
     }
@@ -46,28 +44,30 @@ def get_measurements(request, **kwargs):
 @api_view(["GET"])
 @permission_classes([IsStudent])
 def get_results(request, **kwargs):
-    session = MeasurementSession.objects.filter(student=request.user.student)
-    if not len(session):
+    session_qs = MeasurementSession.objects.filter(student=request.user.student)
+    if not session_qs.exists():
         return Response([])
-    else:
-        session = session[0]
+
+    session = session_qs.first()
     results = MeasurementResult.objects.filter(session=session)
-    response = {}
-    if not len(results):
+
+    if not results.exists():
         return Response({"code": "There is no results"})
+
+    grouped_by_semester = {}
     for result in results:
-        _result = {
+        result_data = {
             'measurement': result.measurement.name,
             'unit': result.measurement.value_unit,
             'value': result.value,
             'approved': result.session.approved,
             'date': result.session.date,
         }
-        if response.get(result.session.semester.name, None) is None:
-            response[result.session.semester.name] = [_result]
-        else:
-            response[result.session.semester.name].append(_result)
-    return Response([{"semester": key, "result": response[key]} for key in response.keys()])
+        semester_name = result.session.semester.name
+        grouped_by_semester.setdefault(semester_name, []).append(result_data)
+
+    response = [{"semester": sem, "result": res} for sem, res in grouped_by_semester.items()]
+    return Response(response)
 
 
 @extend_schema(
@@ -81,20 +81,29 @@ def get_results(request, **kwargs):
 @api_view(["POST"])
 @permission_classes([IsTrainer])
 def post_student_measurement(request, **kwargs):
-    approved = False
-    if hasattr(request.user, 'trainer'):
-        approved = True
-    student = request.user.student if approved is False else Student.objects.get(user_id=request.data['student_id'])
-    measurement = Measurement.objects.filter(id=request.data['measurement_id'])
-    if not len(measurement):
-        return Response({})
+    approved = hasattr(request.user, 'trainer')
+    if approved:
+        student = Student.objects.get(user_id=request.data['student_id'])
     else:
-        measurement = measurement[0]
-    session = MeasurementSession.objects.get_or_create(student=student, approved=approved,
-                                                       date=datetime.datetime.today(),
-                                                       semester=get_ongoing_semester())[0]
+        student = request.user.student
 
-    result = MeasurementResult.objects.get_or_create(measurement=measurement, session=session)
-    result[0].value = request.data['value']
-    result[0].save()
-    return Response({'result_id': result[0].id})
+    measurement_qs = Measurement.objects.filter(id=request.data['measurement_id'])
+    if not measurement_qs.exists():
+        return Response({}, status=status.HTTP_404_NOT_FOUND)
+
+    measurement = measurement_qs.first()
+    session, _ = MeasurementSession.objects.get_or_create(
+        student=student,
+        approved=approved,
+        date=datetime.datetime.today(),
+        semester=get_ongoing_semester()
+    )
+
+    result, _ = MeasurementResult.objects.get_or_create(
+        measurement=measurement,
+        session=session
+    )
+    result.value = request.data['value']
+    result.save()
+
+    return Response({'result_id': result.id})

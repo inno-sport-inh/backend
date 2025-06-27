@@ -1,53 +1,67 @@
 from collections import defaultdict
-
 from django.db.models import Q
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, serializers
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-
-from api.permissions import (
-    IsTrainer, IsStudent, IsSuperUser,
-)
+from api.permissions import IsTrainer, IsStudent, IsSuperUser
 from api.serializers import (
     NotFoundSerializer,
-    ErrorSerializer, SuggestionSerializer,
+    ErrorSerializer, 
+    SuggestionSerializer,
+)
+from api.crud import (
+    get_exercises_crud, 
+    post_student_exercises_result_crud,
+    get_email_name_like_students, 
+    get_ongoing_semester, 
+    get_score, 
+    get_max_score
+)
+from api.serializers.attendance import SuggestionQueryFTSerializer
+from api.serializers.fitness_test import (
+    FitnessTestExerciseSerializer,
+    FitnessTestSessionSerializer,
+    FitnessTestSessionWithResult, 
+    FitnessTestStudentResult,
+    FitnessTestUpload
+)
+from api.serializers.semester import SemesterInSerializer
+from sport.models import (
+    FitnessTestSession, 
+    FitnessTestResult, 
+    FitnessTestExercise, 
+    Semester, 
+    Student
 )
 
-from api.crud import get_exercises_crud, post_student_exercises_result_crud, \
-    get_email_name_like_students, get_ongoing_semester, get_score, get_max_score
-from api.serializers.attendance import SuggestionQueryFTSerializer
-from api.serializers.fitness_test import FitnessTestExerciseSerializer, FitnessTestSessionSerializer, \
-    FitnessTestSessionWithResult, FitnessTestStudentResult, FitnessTestUpload
-from api.serializers.semester import SemesterInSerializer
-from sport.models import FitnessTestSession, FitnessTestResult, FitnessTestExercise, Semester, Student
 
-
+# ======================
+# Exercise Endpoints
+# ======================
 @extend_schema(
     methods=["GET"],
-    description='Get all exercises by `semester_id`. If `semester_id` is not set, returns current semester '
-                          'exercises.',
+    description='Get fitness test exercises for semester',
     parameters=[SemesterInSerializer],
     responses={
         status.HTTP_200_OK: FitnessTestExerciseSerializer(many=True),
     }
 )
 @api_view(["GET"])
-def get_exercises(request, **kwargs):
-    serializer = SemesterInSerializer(data=request.GET)
+def get_fitness_exercises(request):
+    serializer = SemesterInSerializer(data=request.query_params)
     serializer.is_valid(raise_exception=True)
-    semester_id = serializer.validated_data.get('semester_id')
-
-    if semester_id is None:
-        semester_id = get_ongoing_semester()
+    semester_id = serializer.validated_data.get('semester_id', get_ongoing_semester())
     exercises = get_exercises_crud(semester_id)
-
     return Response(FitnessTestExerciseSerializer(exercises, many=True).data)
 
 
+# ======================
+# Session Endpoints  
+# ======================
 @extend_schema(
     methods=["GET"],
-    description='Get all sessions by `semester_id`. If `semester_id` is not set, returns all sessions.',
+    description='Get fitness test sessions',
     parameters=[SemesterInSerializer],
     responses={
         status.HTTP_200_OK: FitnessTestSessionSerializer(many=True)
@@ -55,71 +69,15 @@ def get_exercises(request, **kwargs):
 )
 @api_view(["GET"])
 @permission_classes([IsTrainer | IsSuperUser])
-def get_sessions(request, **kwargs):
-    serializer = SemesterInSerializer(data=request.GET)
+def get_fitness_sessions(request):
+    serializer = SemesterInSerializer(data=request.query_params)
     serializer.is_valid(raise_exception=True)
     semester_id = serializer.validated_data.get('semester_id')
-
-    if semester_id is None:
-        sessions = FitnessTestSession.objects.all()
-    else:
-        sessions = FitnessTestSession.objects.filter(semester_id=semester_id)
-
+    
+    sessions = (FitnessTestSession.objects.all() if semester_id is None
+               else FitnessTestSession.objects.filter(semester_id=semester_id))
+               
     return Response(FitnessTestSessionSerializer(sessions, many=True).data)
-
-
-@extend_schema(
-    methods=["GET"],
-    responses={
-        status.HTTP_200_OK: FitnessTestStudentResult(many=True)
-    }
-)
-@api_view(["GET"])
-@permission_classes([IsStudent])
-def get_result(request, **kwargs):
-    results = FitnessTestResult.objects.filter(student_id=request.user.student.user_id)
-    student = Student.objects.get(user__id=request.user.student.user_id)
-    if not len(results):
-        return Response(status=status.HTTP_404_NOT_FOUND)
-
-    data = []
-    for result_distinct_semester in results.values('exercise__semester_id', 'session__retake').distinct():
-        semester_id = result_distinct_semester['exercise__semester_id']
-        retake = result_distinct_semester['session__retake']
-
-        semester = Semester.objects.get(id=semester_id)
-        grade = True
-        total_score = 0
-        result_list = []
-        for result in results.filter(exercise__semester_id=semester_id, session__retake=retake):
-            result_list.append({
-                'exercise': result.exercise.exercise_name,
-                'unit': result.exercise.value_unit,
-                'value': (result.value
-                          if result.exercise.select is None
-                          else result.exercise.select.split(',')[result.value]),
-                'score': get_score(request.user.student, result),
-                'max_score': get_max_score(request.user.student, result),
-            })
-            grade = grade and result_list[-1]['score'] >= result.exercise.threshold
-            total_score += result_list[-1]['score']
-
-        if semester_id == get_ongoing_semester().id \
-                and student.medical_group == 0 \
-                and result_list:
-            grade = True
-        else:
-            grade = grade and total_score >= semester.points_fitness_test
-
-        data.append({
-            'semester': semester.name,
-            'retake': retake,
-            'grade': grade,
-            'total_score': total_score,
-            'details': result_list,
-        })
-
-    return Response(data=data, status=status.HTTP_200_OK)
 
 
 @extend_schema(
@@ -130,7 +88,7 @@ def get_result(request, **kwargs):
 )
 @api_view(["GET"])
 @permission_classes([IsTrainer | IsSuperUser])
-def get_session_info(request, session_id, **kwargs):
+def get_fitness_session_details(request, session_id):
     results_dict = defaultdict(list)
     for result in FitnessTestResult.objects.filter(session_id=session_id):
         results_dict[result.exercise.id].append(result)
@@ -138,13 +96,80 @@ def get_session_info(request, session_id, **kwargs):
     return Response(FitnessTestSessionWithResult({
         'session': FitnessTestSession.objects.get(id=session_id),
         'exercises': FitnessTestExercise.objects.filter(
-            id__in=FitnessTestResult.objects.filter(session_id=session_id).values_list('exercise').distinct()
+            id__in=FitnessTestResult.objects.filter(
+                session_id=session_id
+            ).values_list('exercise').distinct()
         ),
         'results': results_dict
     }).data)
 
 
-# TODO: do same thing everywhere
+# ======================  
+# Student Results
+# ======================
+@extend_schema(
+    methods=["GET"],
+    responses={
+        status.HTTP_200_OK: FitnessTestStudentResult(many=True)
+    }
+)
+@api_view(["GET"])
+@permission_classes([IsStudent])
+def get_student_fitness_results(request):
+    student = request.user.student
+    results = FitnessTestResult.objects.filter(student=student)
+    
+    if not results.exists():
+        return Response(status=status.HTTP_404_NOT_FOUND)
+
+    data = []
+    for semester_data in results.values('exercise__semester_id', 'session__retake').distinct():
+        semester_id = semester_data['exercise__semester_id']
+        retake = semester_data['session__retake']
+        semester = Semester.objects.get(id=semester_id)
+        
+        result_list = []
+        total_score = 0
+        passed_all = True
+        
+        for result in results.filter(exercise__semester_id=semester_id, session__retake=retake):
+            score = get_score(student, result)
+            max_score = get_max_score(student, result)
+            
+            result_list.append({
+                'exercise': result.exercise.exercise_name,
+                'unit': result.exercise.value_unit,
+                'value': (result.value if result.exercise.select is None
+                         else result.exercise.select.split(',')[result.value]),
+                'score': score,
+                'max_score': max_score,
+            })
+            
+            passed_all = passed_all and score >= result.exercise.threshold
+            total_score += score
+
+        # Special case for current semester and medical group 0
+        current_semester = (semester_id == get_ongoing_semester().id)
+        medical_exempt = (student.medical_group == 0)
+        
+        passed = (passed_all and total_score >= semester.points_fitness_test
+                 if not (current_semester and medical_exempt and result_list)
+                 else True)
+
+        data.append({
+            'semester': semester.name,
+            'retake': retake,
+            'grade': passed,
+            'total_score': total_score,
+            'details': result_list,
+        })
+
+    return Response(data=data, status=status.HTTP_200_OK)
+
+
+# ======================
+# Result Submission
+# ======================
 class PostStudentExerciseResult(serializers.Serializer):
     result = serializers.CharField(default='ok')
     session_id = serializers.IntegerField()
@@ -161,31 +186,34 @@ class PostStudentExerciseResult(serializers.Serializer):
 )
 @api_view(["POST"])
 @permission_classes([IsTrainer | IsSuperUser])
-def post_student_exercises_result(request, session_id=None, **kwargs):
-    trainer = request.user
-    if not trainer.is_superuser and not trainer.has_perm('sport.change_fitness_test'):
-        return Response(
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+def submit_fitness_results(request, session_id=None):
+    if not request.user.has_perm('sport.change_fitness_test'):
+        return Response(status=status.HTTP_403_FORBIDDEN)
+
     serializer = FitnessTestUpload(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    semester_id = serializer.validated_data['semester_id']
     try:
-        semester = Semester.objects.get(id=semester_id)
+        semester = Semester.objects.get(id=serializer.validated_data['semester_id'])
     except Semester.DoesNotExist:
         return Response(
             status=status.HTTP_404_NOT_FOUND,
-            data=NotFoundSerializer({'detail': f'No semester with id={semester_id}'})
+            data=NotFoundSerializer({'detail': 'Semester not found'})
         )
 
-    retake = serializer.validated_data['retake']
-    results = serializer.validated_data['results']
-    session = post_student_exercises_result_crud(semester, retake, results, session_id, request.user)
+    session = post_student_exercises_result_crud(
+        semester,
+        serializer.validated_data['retake'],
+        serializer.validated_data['results'],
+        session_id,
+        request.user
+    )
     return Response(PostStudentExerciseResult({'session_id': session}).data)
 
 
-# TODO: Rewrite suggest to JSON
+# ======================
+# Student Suggestions
+# ======================
 @extend_schema(
     methods=["GET"],
     parameters=[SuggestionQueryFTSerializer],
@@ -195,23 +223,18 @@ def post_student_exercises_result(request, session_id=None, **kwargs):
 )
 @api_view(["GET"])
 @permission_classes([IsTrainer | IsSuperUser])
-def suggest_fitness_test_student(request, **kwargs):
-    serializer = SuggestionQueryFTSerializer(data=request.GET)
+def suggest_fitness_students(request):
+    serializer = SuggestionQueryFTSerializer(data=request.query_params)
     serializer.is_valid(raise_exception=True)
 
     suggested_students = get_email_name_like_students(
         serializer.validated_data["term"],
         requirement=(~Q(fitnesstestresult__exercise__semester=get_ongoing_semester()))
     )
-    return Response([
-        {
-            "value": f"{student['id']}_"
-                     f"{student['full_name']}_"
-                     f"{student['email']}_"
-                     f"{student['medical_group__name']}_"
-                     f"{student['gender']}",
-            "label": f"{student['full_name']} "
-                     f"({student['email']})",
-        }
-        for student in suggested_students
-    ])
+
+    return Response([{
+        "value": f"{student['id']}_{student['full_name']}_"
+                f"{student['email']}_{student['medical_group__name']}_"
+                f"{student['gender']}",
+        "label": f"{student['full_name']} ({student['email']})",
+    } for student in suggested_students])

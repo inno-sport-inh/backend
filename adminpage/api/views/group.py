@@ -7,7 +7,13 @@ from rest_framework.response import Response
 
 from api.crud import get_group_info, get_sports
 from api.permissions import IsStudent, IsTrainer
-from api.serializers import GroupInfoSerializer, NotFoundSerializer, SportsSerializer, EmptySerializer, ErrorSerializer
+from api.serializers import (
+    GroupInfoSerializer,
+    NotFoundSerializer,
+    SportsSerializer,
+    EmptySerializer,
+    ErrorSerializer,
+)
 from api.serializers.group import SportEnrollSerializer
 from sport.models import Group, Schedule, Student, Sport
 
@@ -39,7 +45,6 @@ def group_info_view(request, group_id, **kwargs):
     }
 )
 @api_view(["GET"])
-# @permission_classes([IsStudent]) Temporary off for academic_leave students
 def sports_view(request, **kwargs):
     serializer = SportsSerializer({'sports': get_sports()})
     return Response(serializer.data)
@@ -60,10 +65,7 @@ def sports_view(request, **kwargs):
 def select_sport(request, **kwargs):
     serializer = SportEnrollSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    sport = get_object_or_404(
-        Sport,
-        pk=serializer.validated_data["sport_id"]
-    )
+    sport = get_object_or_404(Sport, pk=serializer.validated_data["sport_id"])
 
     student: Student = request.user.student
     student.sport = sport

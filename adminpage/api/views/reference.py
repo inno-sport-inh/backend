@@ -2,8 +2,7 @@ from django.db import transaction
 from django.utils.timezone import make_naive
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, \
-    parser_classes
+from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
@@ -40,25 +39,33 @@ def reference_upload(request, **kwargs):
     serializer = ReferenceUploadSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
+    student = request.user
+    semester = get_ongoing_semester()
+    start = serializer.validated_data['start']
+    end = serializer.validated_data['end']
     image = serializer.validated_data['image']
-
-    student = request.user  # user.pk == user.student.pk
 
     try:
         with transaction.atomic():
-            ref = serializer.save(
-                semester=get_ongoing_semester(),
+            reference = serializer.save(
+                semester=semester,
                 student_id=student.pk,
-                hours=(serializer.validated_data['end'] - serializer.validated_data['start']).days // 7 * get_ongoing_semester().number_hours_one_week_ill
+                hours=((end - start).days // 7) * semester.number_hours_one_week_ill
             )
-            count = Reference.objects.filter(
+
+            uploaded_date = make_naive(reference.uploaded).date()
+            upload_count = Reference.objects.filter(
                 student_id=student.pk,
-                uploaded__date=make_naive(ref.uploaded).date()
+                uploaded__date=uploaded_date
             ).count()
-            assert count == 1
+
+            if upload_count > 1:
+                raise AssertionError
+
     except AssertionError:
         return Response(
             status=status.HTTP_400_BAD_REQUEST,
             data=error_detail(*ReferenceErrors.TOO_MUCH_UPLOADS_PER_DAY)
         )
+
     return Response({})
